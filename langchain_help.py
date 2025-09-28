@@ -2,37 +2,46 @@
 from dotenv import load_dotenv
 import os
 import google.generativeai as genai
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.document_loaders.csv_loader import CSVLoader
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.document_loaders import CSVLoader
 from langchain.prompts import PromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
+from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Set up the model
+# Load environment variables
 load_dotenv()
-generation_config = {
-    "temperature": 0.75,
-}
-genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
-llm = genai.GenerativeModel(model_name="gemini-pro", generation_config=generation_config)
+google_api_key = os.getenv("GOOGLE_API_KEY")
 
-# Vector Embedding
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=os.environ["GOOGLE_API_KEY"])
+if not google_api_key:
+    raise ValueError("❌ GOOGLE_API_KEY not found. Make sure it's in your .env file.")
 
+# Configure the model
+generation_config = {"temperature": 0.75}
+genai.configure(api_key=google_api_key)
+
+# Vector Embedding → HuggingFace (free, no quota issues)
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
 
 def create_vectordb():
-    # Load data from CSV file
-    loader = CSVLoader(file_path='Ecommerce_FAQs.csv', encoding='cp1252', source_column='prompt')
+    # Load data from CSV file (⚠️ check your column names!)
+    loader = CSVLoader(file_path='Ecommerce_FAQs.csv', encoding='cp1252')
     documents = loader.load()
-    vectordb = Chroma.from_documents(documents,
-                                     embedding=embeddings,
-                                     persist_directory='./ChromaDB')
+
+    vectordb = Chroma.from_documents(
+        documents=documents,
+        embedding=embeddings,
+        persist_directory='./ChromaDB'
+    )
     vectordb.persist()
 
-
 def get_response(query):
-    vectordb = Chroma(persist_directory="ChromaDB", embedding_function=embeddings)
+    vectordb = Chroma(
+        persist_directory="ChromaDB",
+        embedding_function=embeddings
+    )
     retriever = vectordb.as_retriever()
 
     # Prompt template
@@ -47,20 +56,26 @@ def get_response(query):
     PROMPT = PromptTemplate(
         template=prompt_template, input_variables=["context", "question"]
     )
-    chain_type_kwargs = {"prompt": PROMPT}
 
-    # Chat model and Chain
-    chat = ChatGoogleGenerativeAI(model="gemini-pro", google_api_key=os.environ["GOOGLE_API_KEY"], temperature=0.3)
+    # Chat model → Gemini for answering
+    chat = ChatGoogleGenerativeAI(
+    model="models/gemini-1.5-flash",   # or "models/gemini-1.5-pro"
+    google_api_key=google_api_key,
+    temperature=0.3)
+
+
     chain = load_qa_chain(chat, chain_type="stuff", prompt=PROMPT)
 
-    # Query
-    # query = "how long is the shipping and can I cancel my order?"
-    response = \
-        chain.invoke({"input_documents": retriever.get_relevant_documents(query), "question": query},
-                     return_only_outputs=True)['output_text']
+    # Get response
+    response = chain.invoke(
+        {"input_documents": retriever.get_relevant_documents(query), "question": query},
+        return_only_outputs=True
+    )['output_text']
+
     return response
 
-
 if __name__ == '__main__':
+    # First run: uncomment this line to build ChromaDB
     # create_vectordb()
+
     print(get_response("shipping duration?"))
